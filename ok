@@ -1,0 +1,363 @@
+# Testing Guide for DataPlotApp_full MATLAB Application
+
+This guide explains how to test the MATLAB `DataPlotApp_full` application by breaking it into sections ("chunks") and testing each incrementally. This approach helps isolate issues, understand code functionality, and learn programming concepts like debugging and modular design. Each section includes a code chunk, testing instructions, and common issues with fixes to illustrate scenarios where the code might or might not work.
+
+## Prerequisites
+- Save the full code as `DataPlotApp_full.m` in a MATLAB-accessible directory.
+- Use MATLAB R2016a or later (required for UI components like `uifigure`).
+- Test chunks by copying into a script, the Command Window, or commenting out parts of the full file.
+- Create sample `.mat` files for testing, e.g.:
+  ```
+  data.A = [1:100];
+  data.B.C = rand(50,1);
+  data.B.D = table(rand(10,1), rand(10,1), 'VariableNames', {'Col1', 'Col2'});
+  save('test.mat', 'data');
+  ```
+
+## Section 1: Setting Up the Basic UI (Core App Structure)
+This chunk tests the GUI skeleton: the main figure and panels.
+
+### Code Chunk
+```matlab
+classdef DataPlotApp_full < matlab.apps.AppBase
+    properties (Access = public)
+        UIFigure matlab.ui.Figure
+        LeftPanel matlab.ui.container.Panel
+        RightPanel matlab.ui.container.Panel
+    end
+
+    methods (Access = private)
+        function createComponents(app)
+            app.UIFigure = uifigure('Name','DataPlotApp_full','Position',[80 80 1200 800]);
+            app.LeftPanel = uipanel(app.UIFigure,'Title','Data & Transforms','Position',[10 10 320 780]);
+            app.RightPanel = uipanel(app.UIFigure,'Title','Plot & Info','Position',[590 10 600 780]);
+        end
+    end
+
+    methods (Access = public)
+        function app = DataPlotApp_full()
+            createComponents(app);
+        end
+    end
+end
+```
+
+### How to Test
+1. Save as `TestUI.m` (rename class to `TestUI` if needed to avoid conflicts).
+2. Run in MATLAB Command Window: `app = DataPlotApp_full;`
+3. Expected Output: A window appears with title "DataPlotApp_full", a left panel ("Data & Transforms"), and a right panel ("Plot & Info").
+4. Interact: Resize the window to ensure panels stay positioned. Close the window to verify it closes cleanly.
+
+### What Might Not Work
+- **Error: "Undefined function 'uifigure'"**
+  - Cause: MATLAB version older than R2016a.
+  - Fix: Upgrade MATLAB or replace `uifigure` with `figure` (note: this loses app features).
+- **Panels overlap or are mispositioned**
+  - Cause: Screen resolution too low for absolute positions.
+  - Fix: Adjust position values, e.g., change UIFigure width to 1000: `app.UIFigure = uifigure('Name','DataPlotApp_full','Position',[80 80 1000 800]);`
+- **Success Case**: Window and panels display correctly, confirming UI setup works. This teaches property declaration and method organization.
+
+## Section 2: Loading a .mat File
+This chunk tests file input/output and error handling.
+
+### Code Chunk
+Add to the class:
+```matlab
+properties (Access = private)
+    DataStruct
+    FileName
+end
+properties (Access = public)
+    FileLabel matlab.ui.control.Label
+    StatusLabel matlab.ui.control.Label
+    LoadButton matlab.ui.control.Button
+end
+methods (Access = private)
+    function loadMatFile(app)
+        [file, path] = uigetfile('*.mat','Select MAT file');
+        if isequal(file,0)
+            return;
+        end
+        app.FileName = fullfile(path,file);
+        try
+            app.DataStruct = load(app.FileName);
+        catch ME
+            uialert(app.UIFigure, ['Failed to load file: ' ME.message],'Load Error');
+            return;
+        end
+        app.FileLabel.Text = ['Loaded: ' file];
+        app.StatusLabel.Text = 'File loaded.';
+    end
+end
+```
+In `createComponents`, add:
+```matlab
+app.FileLabel = uilabel(app.LeftPanel,'Text','No file loaded.','Position',[10 705 300 20]);
+app.StatusLabel = uilabel(app.RightPanel,'Text','Ready','Position',[10 50 400 20]);
+app.LoadButton = uibutton(app.LeftPanel,'push','Text','Load .mat','Position',[10 730 90 30],'Button stitchedFcn',@(btn,event)app.loadMatFile());
+```
+
+### How to Test
+1. Run the app: `app = DataPlotApp_full;`
+2. Click "Load .mat" button.
+3. Select a valid `.mat` file, e.g., create one: `save('test.mat', 'magic(3)');`
+4. Expected Output: File name appears in FileLabel (e.g., "Loaded: test.mat"), StatusLabel shows "File loaded."
+5. Edge Case: Click "Cancel" in file dialog—no changes should occur.
+
+### What Might Not Work
+- **Error: "No field 'FileName'"**
+  - Cause: Forgot to declare `FileName` property.
+  - Fix: Add `FileName` to `properties (Access = private)` block.
+- **Load fails on invalid file** (e.g., text file renamed .mat)
+  - Cause: Invalid .mat file format.
+  - Fix: Use a valid .mat file. The `try-catch` block should display an alert with the error message, teaching error handling.
+- **Success Case**: File loads, labels update. This chunk teaches file I/O and callback wiring.
+
+## Section 3: Building the Data Tree Navigator
+This chunk tests recursive struct navigation and tree building.
+
+### Code Chunk
+Add to properties: `VarTree matlab.ui.container.Tree`
+Add to `createComponents`: `app.VarTree = uitree(app.LeftPanel,'Position',[10 420 300 250]);`
+Add methods:
+```matlab
+methods (Access = private)
+    function buildTreeFromStruct(app)
+        delete(app.VarTree.Children);
+        root = uitreenode(app.VarTree,'Text','(root)','NodeData',struct('type','root','path',''));
+        vars = fieldnames(app.DataStruct);
+        for i=1:numel(vars)
+            name = vars{i};
+            val = app.DataStruct.(name);
+            node = uitreenode(root,'Text',name,'NodeData',struct('type',class(val),'path',name));
+            app.recursiveTreeFill(node, val, name);
+        end
+        expand(root);
+    end
+
+    function recursiveTreeFill(app, node, val, pathSoFar)
+        if isstruct(val)
+            f = fieldnames(val);
+            for i=1:numel(f)
+                txt = f{i};
+                p = sprintf('%s.%s',pathSoFar,txt);
+                child = uitreenode(node,'Text',txt,'NodeData',struct('type',class(val.(txt)),'path',p));
+                app.recursiveTreeFill(child, val.(txt), p);
+            end
+        end
+    end
+end
+```
+Modify `loadMatFile` to call `app.buildTreeFromStruct();` after loading.
+
+### How to Test
+1. Create a test .mat file: `s.a = 1; s.b.c = 2; save('test.mat', 's');`
+2. Run app, load `test.mat`.
+3. Expected Output: Tree shows `(root) > s > a, b > c`.
+4. Interact: Expand/collapse nodes to verify structure.
+
+### What Might Not Work
+- **Infinite recursion crash**
+  - Cause: Struct with cycles (rare in real data).
+  - Fix: Add cycle detection (advanced) or use non-cyclic data.
+- **No nodes for cells/tables**
+  - Cause: Chunk only handles structs, not cells or tables.
+  - Fix: Add cell/table handling from full code (see `recursiveTreeFill`).
+- **Success Case**: Tree builds correctly, teaching recursive programming and UI tree components.
+
+## Section 4: Variable Selection and Path Resolution
+This chunk tests selecting variables and resolving data paths.
+
+### Code Chunk
+Add properties: `VariableListBox matlab.ui.control.ListBox`, `AddNodeButton matlab.ui.control.Button`
+Add to `createComponents`:
+```matlab
+app.AddNodeButton = uibutton(app.LeftPanel,'push','Text','Add node ->','Position',[10 390 120 24],'ButtonPushedFcn',@(btn,event)app.addSelectedNodeToVariables());
+app.VariableListBox = uilistbox(app.LeftPanel,'Position',[10 240 300 140],'Multiselect','on');
+```
+Add methods:
+```matlab
+function addSelectedNodeToVariables(app)
+    n = app.VarTree.SelectedNodes;
+    if isempty(n)
+        uialert(app.UIFigure,'Select a node to add.','Info'); return;
+    end
+    for k=1:numel(n)
+        path = n(k).NodeData.path;
+        items = app.VariableListBox.Items;
+        if ~any(strcmp(items,path))
+            items{end+1} = path;
+        end
+    end
+    app.VariableListBox.Items = items;
+    app.StatusLabel.Text = 'Added node(s) to variable selection.';
+end
+
+function v = getValueByPath(app, path)
+    try
+        v = evalin('base', ['app.DataStruct.' path]);
+    catch
+        v = [];
+    end
+end
+```
+
+### How to Test
+1. Load `test.mat` (from Section 3).
+2. Select a node (e.g., `s.b.c`), click "Add node ->".
+3. Expected Output: Path `s.b.c` appears in VariableListBox.
+4. Test `getValueByPath` in Command Window:
+   ```matlab
+   app.DataStruct.s.b.c = 42;
+   v = app.getValueByPath('s.b.c'); disp(v); % Should display 42
+   ```
+
+### What Might Not Work
+- **Path parsing fails**
+  - Cause: Invalid path syntax (e.g., 's{b' missing '}').
+  - Fix: Use full `getValueByPath` from original code for robust parsing.
+- **Duplicate paths added**
+  - Cause: Missing duplicate check (`~any(strcmp...)`).
+  - Fix: Ensure the check is included.
+- **Success Case**: Variables add to listbox, path resolves correctly, teaching list management and dynamic data access.
+
+## Section 5: Plotting Variables
+This chunk tests the core visualization functionality.
+
+### Code Chunk
+Add property: `UIAxes matlab.ui.control.UIAxes`, `PlotButton matlab.ui.control.Button`, `PlotTypeDropDown matlab.ui.control.DropDown`
+Add to `createComponents`:
+```matlab
+app.UIAxes = uiaxes(app.RightPanel,'Position',[10 150 580 600]);
+app.PlotButton = uibutton(app.ControlsPanel,'push','Text','Plot','Position',[10 155 70 30],'ButtonPushedFcn',@(btn,event)app.plotSelectedVars());
+app.PlotTypeDropDown = uidropdown(app.ControlsPanel,'Items',{'Line','Scatter'},'Value','Line','Position',[150 160 80 22]);
+```
+Add methods:
+```matlab
+function plotSelectedVars(app)
+    sel = app.VariableListBox.Value;
+    if isempty(sel)
+        uialert(app.UIFigure,'Select one or more variables.','Error'); return;
+    end
+    cla(app.UIAxes);
+    for k=1:numel(sel)
+        val = app.getValueByPath(sel{k});
+        if isnumeric(val)
+            plotNumeric(app, app.UIAxes, val, app.PlotTypeDropDown.Value, [], 'none', '-', sel{k});
+        end
+    end
+    app.StatusLabel.Text = 'Plot complete.';
+end
+
+function plotNumeric(app, ax, data, plotType, col, mkr, lns, label)
+    if strcmp(plotType, 'Line')
+        plot(ax, data, 'LineStyle', lns, 'Marker', mkr, 'DisplayName', label);
+    else
+        scatter(ax, 1:numel(data), data, 'DisplayName', label);
+    end
+    legend(ax, 'show', 'Interpreter', 'none');
+end
+```
+
+### How to Test
+1. Load a .mat with numeric data (e.g., `data.A = [1:10]; save('test.mat', 'data');`).
+2. Add `A` to variable list, select "Line", click "Plot".
+3. Expected Output: Line plot of `A` appears in UIAxes.
+
+### What Might Not Work
+- **"Unsupported type" message**
+  - Cause: Non-numeric data selected.
+  - Fix: Ensure selected variable is numeric or add type checks.
+- **Plot empty**
+  - Cause: `getValueByPath` returned []. Fix: Debug path resolution.
+- **Success Case**: Plot displays, teaching plotting and UI interaction.
+
+## Section 6: Data Transforms (Smoothing Example)
+This chunk tests a data transformation.
+
+### Code Chunk
+Add properties: `SmoothButton matlab.ui.control.Button`, `SmoothWindowField matlab.ui.control.NumericEditField`
+Add to `createComponents`:
+```matlab
+app.SmoothButton = uibutton(app.LeftPanel,'push','Text','Smoothing','Position',[80 35 90 24],'ButtonPushedFcn',@(btn,event)app.applySmoothing());
+app.SmoothWindowField = uieditfield(app.LeftPanel,'numeric','Position',[10 35 60 22],'Value',5);
+```
+Add method:
+```matlab
+function applySmoothing(app)
+    sel = app.VariableListBox.Value;
+    if isempty(sel), uialert(app.UIFigure,'Select a variable.','Info'); return; end
+    w = max(1, round(app.SmoothWindowField.Value));
+    for k=1:numel(sel)
+        v = app.getValueByPath(sel{k});
+        if isnumeric(v) && isvector(v)
+            kernel = ones(w,1)/w;
+            sm = conv(v(:),kernel,'same');
+            newName = [sel{k} '_sm' num2str(w)];
+            app.DataStruct.(matlab.lang.makeValidName(newName)) = sm;
+            app.buildTreeFromStruct();
+        end
+    end
+    app.StatusLabel.Text = 'Smoothing applied.';
+end
+```
+
+### How to Test
+1. Load .mat with vector (e.g., `data.A = [1:10];`).
+2. Select `A`, set window=5, click "Smoothing".
+3. Expected Output: New variable `A_sm5` appears in tree.
+
+### What Might Not Work
+- **Non-vector input**
+  - Cause: Selected a matrix or non-numeric data.
+  - Fix: Add `isvector` check or alert user (already included).
+- **Name collision**
+  - Cause: Variable name already exists.
+  - Fix: `makeValidName` helps, but test for overwrites.
+- **Success Case**: New smoothed variable added, teaching signal processing and dynamic struct updates.
+
+## Section 7: Exports and Extras (PNG Export Example)
+This chunk tests exporting functionality.
+
+### Code Chunk
+Add property: `ExportPNGButton matlab.ui.control.Button`
+Add to `createComponents`:
+```matlab
+app.ExportPNGButton = uibutton(app.RightPanel,'push','Text','Export PNG','Position',[160 5 80 24],'ButtonPushedFcn',@(btn,event)app.exportPNG());
+```
+Add method:
+```matlab
+function exportPNG(app)
+    [f,p] = uiputfile('*.png','Save PNG');
+    if isequal(f,0), return; end
+    fname = fullfile(p,f);
+    try
+        exportgraphics(app.UIAxes,fname,'BackgroundColor','white');
+        uialert(app.UIFigure,'PNG saved.','Saved');
+    catch ME
+        uialert(app.UIFigure,['Save failed: ' ME.message],'Error');
+    end
+end
+```
+
+### How to Test
+1. Plot a variable.
+2. Click "Export PNG", choose a file location.
+3. Expected Output: PNG file saved, alert says "PNG saved."
+
+### What Might Not Work
+- **Export fails**
+  - Cause: No write permission or `exportgraphics` unavailable (pre-R2020a).
+  - Fix: Check directory permissions or use `saveas` instead.
+- **Success Case**: PNG exports, teaching file output, and error handling.
+
+## Programming Lessons
+- **Chunking Principle**: Break code into small, testable pieces (UI, file loading, plotting). Test each before combining.
+- **Debugging**: Use `disp` or breakpoints to inspect variables (e.g., in `getValueByPath`).
+- **Error Handling**: Expect failures (e.g., invalid files, wrong types) and use `try-catch` or checks.
+- **Next Steps**: Run full app, modify a chunk (e.g., add a new transform), and retest to build intuition.
+
+## Additional Notes
+- If you hit specific issues (e.g., error messages, feature not working), provide details for targeted fixes.
+- To extend the app, add new plot types or transforms by mimicking existing methods.
+- Use the sample .mat file to test all features safely.
